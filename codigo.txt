@@ -1,0 +1,197 @@
+-- Crear la tabla TARJETA
+CREATE TABLE TARJETA(
+    IDTARJETA INT NOT NULL PRIMARY KEY,
+    NUMERO_TARJETA VARCHAR(16) UNIQUE,
+    SALDO_TARJETA MONEY
+);
+
+-- Crear la tabla CLIENTE
+CREATE TABLE CLIENTE(
+    IDCLIENTE INT IDENTITY (1,1) NOT NULL PRIMARY KEY,
+    NOMBRES VARCHAR(30),
+    APELLIDO VARCHAR(30),
+    CI VARCHAR(10) NOT NULL UNIQUE,
+    EMAIL VARCHAR(40) UNIQUE
+);
+
+-- Crear la tabla ARTICULO
+CREATE TABLE ARTICULO(
+    IDARTICULO INT NOT NULL PRIMARY KEY,
+    NOMBRE_ARTICULO VARCHAR(30),
+    PRECIO_ARTICULO MONEY,
+    STOCK INT NOT NULL
+);
+
+-- Agregar la restricción de CHECK en la tabla ARTICULO
+ALTER TABLE ARTICULO ADD CHECK (STOCK >= 0);
+
+-- Crear la tabla PEDIDO
+CREATE TABLE PEDIDO(
+    IDPEDIDO INT IDENTITY (1,1) NOT NULL PRIMARY KEY,
+    IDCLIENTE INT NOT NULL,
+    FECHA_PEDIDO DATE NOT NULL,
+    IDARTICULO INT NOT NULL,
+    DIRECCION_ENTREGA VARCHAR(100),
+    CONSTRAINT FK_IDCLIENTE FOREIGN KEY (IDCLIENTE) REFERENCES CLIENTE(IDCLIENTE),
+    CONSTRAINT FK_IDARTICULO FOREIGN KEY (IDARTICULO) REFERENCES ARTICULO(IDARTICULO)
+);
+
+-- Crear la tabla ESTADO_ENVIO
+CREATE TABLE ESTADO_ENVIO (
+    IDESTADO INT NOT NULL PRIMARY KEY,
+    DESCRIPCION VARCHAR(50) NOT NULL
+);
+
+-- Insertar datos en la tabla ESTADO_ENVIO
+INSERT INTO ESTADO_ENVIO (IDESTADO, DESCRIPCION)
+VALUES (1, 'En Proceso'),
+       (2, 'En Ruta'),
+       (3, 'Entregado'),
+	   (4, 'Pedido Cancelado');
+
+-- Crear la tabla ENVIO
+CREATE TABLE ENVIO (
+    IDENVIO INT IDENTITY (1,1) NOT NULL PRIMARY KEY,
+    IDPEDIDO INT NOT NULL,
+    FECHA_DE_ENVIO DATE,
+    IDESTADO INT NOT NULL,
+    CONSTRAINT FK_IDPEDIDO FOREIGN KEY (IDPEDIDO) REFERENCES PEDIDO(IDPEDIDO),
+    CONSTRAINT FK_IDESTADO FOREIGN KEY (IDESTADO) REFERENCES ESTADO_ENVIO(IDESTADO)
+);
+
+CREATE PROCEDURE RealizarPedido (
+    @ID_Cliente INT,
+    @ID_Articulo INT,
+    @Direccion_Entrega VARCHAR(200), -- Aumentamos el tamaño del campo de dirección
+    @Cantidad_solicitada INT,
+    @Numero_Tarjeta VARCHAR(16), -- Número de tarjeta para el pago
+    @ID_Estado INT -- Nuevo parámetro para el estado del envío
+)
+AS
+BEGIN
+    SET NOCOUNT ON; -- Activar la salida de mensajes
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @StockActual INT;
+        DECLARE @PrecioTotal MONEY;
+        DECLARE @ID_Pedido INT;
+
+        -- Insertar el pedido
+        INSERT INTO PEDIDO (IDCLIENTE, FECHA_PEDIDO, IDARTICULO, DIRECCION_ENTREGA)
+        VALUES (@ID_Cliente, GETDATE(), @ID_Articulo, @Direccion_Entrega);
+
+        -- Recuperar el ID del pedido recién insertado
+        SET @ID_Pedido = SCOPE_IDENTITY();
+
+        -- Insertar en la tabla ENVIO
+        INSERT INTO ENVIO (IDPEDIDO, FECHA_DE_ENVIO, IDESTADO)
+        VALUES (@ID_Pedido, GETDATE(), @ID_Estado); -- Estado del envío pasado como parámetro
+
+        -- Verificar si hay suficiente stock disponible para el artículo
+        SELECT @StockActual = STOCK
+        FROM ARTICULO
+        WHERE IDARTICULO = @ID_Articulo;
+
+        IF @StockActual >= @Cantidad_solicitada
+        BEGIN
+            -- Calcular el precio total del pedido
+            SELECT @PrecioTotal = PRECIO_ARTICULO * @Cantidad_solicitada
+            FROM ARTICULO
+            WHERE IDARTICULO = @ID_Articulo;
+
+            -- Verificar si el saldo de la tarjeta es suficiente para realizar el pago
+            IF EXISTS (SELECT 1 FROM TARJETA WHERE NUMERO_TARJETA = @Numero_Tarjeta AND SALDO_TARJETA >= @PrecioTotal)
+            BEGIN
+                -- Actualizar el stock del artículo
+                UPDATE ARTICULO
+                SET STOCK = STOCK - @Cantidad_solicitada
+                WHERE IDARTICULO = @ID_Articulo;
+
+                -- Descontar el monto del pedido del saldo de la tarjeta
+                UPDATE TARJETA
+                SET SALDO_TARJETA = SALDO_TARJETA - @PrecioTotal
+                WHERE NUMERO_TARJETA = @Numero_Tarjeta;
+
+                -- Confirmar la transacción
+                COMMIT TRANSACTION;
+                PRINT 'Pedido realizado con éxito.';
+            END
+            ELSE
+            BEGIN
+                -- No hay suficiente saldo en la tarjeta
+                RAISERROR('No hay suficiente saldo en la tarjeta para realizar el pago.', 16, 1);
+            END;
+        END
+        ELSE
+        BEGIN
+            -- No hay suficiente stock
+            RAISERROR('No hay suficiente stock para realizar el pedido.', 16, 1);
+        END;
+    END TRY
+    BEGIN CATCH
+        -- Revertir la transacción en caso de error
+        IF @@TRANCOUNT > 0 -- Verificación de Transacción en Curso
+        BEGIN
+            ROLLBACK TRANSACTION;
+            PRINT ERROR_MESSAGE();
+            RAISERROR('Error al realizar el pedido. La transacción ha sido revertida.', 16, 1);
+        END;
+    END CATCH;
+END;
+
+
+-- Crear el procedimiento almacenado ActualizarStock
+CREATE PROCEDURE ActualizarStock (
+    @ID_Articulo INT,
+    @NuevoStock INT
+)
+AS
+BEGIN
+    -- Verificar si el artículo existe
+    IF EXISTS (SELECT 1 FROM ARTICULO WHERE IDARTICULO = @ID_Articulo)
+    BEGIN
+        -- Actualizar el stock del artículo
+        UPDATE ARTICULO
+        SET STOCK = @NuevoStock
+        WHERE IDARTICULO = @ID_Articulo;
+
+        PRINT 'Stock actualizado correctamente.';
+    END
+    ELSE
+    BEGIN
+        PRINT 'El artículo no existe.';
+    END;
+END;
+
+--DROP PROCEDURE IF EXISTS RealizarPedido;
+
+-- Insertar datos TARJETA
+INSERT INTO TARJETA (IDTARJETA, NUMERO_TARJETA, SALDO_TARJETA)
+VALUES (1, '6547225784355653', 50);
+
+-- Insertar datos de ejemplo en la tabla CLIENTE
+INSERT INTO CLIENTE (NOMBRES, APELLIDO, CI, EMAIL)
+VALUES ('Juan', 'Mero', '1234567890', 'correo@ejemplo.com');
+
+-- Insertar datos de ejemplo en la tabla ARTICULO
+INSERT INTO ARTICULO (IDARTICULO, NOMBRE_ARTICULO, STOCK, PRECIO_ARTICULO)
+VALUES (1, 'Producto A', 10, 3),
+       (2, 'Producto B', 10, 5);
+
+
+EXECUTE RealizarPedido 
+    @ID_Cliente = 1, -- ID del cliente
+    @ID_Articulo = 2, -- ID del artículo
+    @Direccion_Entrega = 'Calle Principal, Ciudad, País', -- Dirección de entrega
+    @Cantidad_solicitada = 1, -- Cantidad de artículos a pedir
+    @Numero_Tarjeta = '6547225784355653', -- Número de tarjeta
+    @ID_Estado = 1; -- Estado del envío (por ejemplo, 1 para 'En Proceso')
+
+	SELECT * FROM TARJETA;
+	SELECT * FROM CLIENTE;
+	SELECT * FROM ARTICULO;
+	SELECT * FROM PEDIDO;
+	SELECT * FROM ESTADO_ENVIO;
+	SELECT * FROM ENVIO;
